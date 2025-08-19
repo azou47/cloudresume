@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Cloud Resume Challenge (Antman Edition) - S3 + Lambda + DynamoDB + API Gateway
+
+Resources:
+  ResumeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "antman-crc-${AWS::AccountId}-${AWS::Region}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  ResumeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ResumeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${ResumeBucket.Arn}/*"
+
+  VisitorTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: crc_visitors
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaDdbPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt VisitorTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  CounterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: crc-counter
+      Handler: lambda_function.handler
+      Runtime: python3.12
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref VisitorTable
+      Code:
+        S3Bucket: !Sub "antman-crc-${AWS::AccountId}-${AWS::Region}"
+        S3Key: lambda.zip
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: crc-api
+      ProtocolType: HTTP
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CounterFunction.Arn}/invocations
+      PayloadFormatVersion: "2.0"
+
+  Route:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "POST /"
+      Target: !Sub integrations/${Integration}
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CounterFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${HttpApi.Arn}/*/*"
+
+Outputs:
+  SiteURL:
+    Value: !Sub "http://${ResumeBucket}.s3-website-${AWS::Region}.amazonaws.com"
+  ApiURL:
+    Value: !Ref HttpApi

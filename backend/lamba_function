@@ -1,0 +1,25 @@
+import boto3
+import os
+import json
+
+TABLE_NAME = os.environ.get("TABLE_NAME", "crc_visitors")
+PK = "id"
+PK_VALUE = "counter"
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table(TABLE_NAME)
+
+def handler(event, context):
+    resp = table.update_item(
+        Key={PK: PK_VALUE},
+        UpdateExpression="ADD #c :inc",
+        ExpressionAttributeNames={"#c": "count"},
+        ExpressionAttributeValues={":inc": 1},
+        ReturnValues="ALL_NEW",
+    )
+    count = resp["Attributes"]["count"]
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"count": int(count)})
+    }
